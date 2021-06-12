@@ -1,0 +1,95 @@
+Retornando códigos de erro em uma API gRPC:
+
+Vamos agora aplicar validação ao nosso projeto Fretes (Servidor). Agora vamos verificar se o CEP informado pelo usuário (Cliente) é valido, caso não seja vamos informar o motivo!
+Siga o passo a passo:
+
+1) Vamos pegar o valor do CEP e depois verificar se está vazio ou null, caso esteja vamos lançar uma exception:
+
+var cep = request?.cep
+if (cep == null || cep.isBlank()){
+    throw IllegalArgumentException("Cep deve ser informado!")
+}
+
+Dessa forma não estamos reportando a mensagem "Cep deve ser informado!" ao cliente. O cliente apenas fica sabendo que houve um erro.
+
+2) Para informar o usuário a mensagem de erro, devemos lançar a exception de um tipo específico do gRPC que é StatusRuntimeException ou StatusException. Só que mesmo lançando com esses tipos a mensagem não aparece, pois por segurança o gRPC bloquea. Para mostrar a mensagem vamos parar de lançar a exception e sim enviá-la na resposta! Ficando assim: 
+
+var cep = request?.cep
+if (cep == null || cep.isBlank()) {
+    val e = StatusRuntimeException(Status.INVALID_ARGUMENT.withDescription("Cep deve ser informado!"))
+    responseObserver?.onError(e)
+}
+
+3) O item anterior esta funcionando, mas a maneira recomendável é não criar um StatusRuntimeExcpetion. Sem criar, teremos que fazer assim:
+
+var cep = request?.cep
+if (cep == null || cep.isBlank()) {
+    val e = Status.INVALID_ARGUMENT
+        .withDescription("Cep deve ser informado!")
+        .asRuntimeException()
+    responseObserver?.onError(e)
+}
+
+4) Agora vamos verificar se o CEP preenchido é realmente válido:
+
+if(!cep!!.matches("[0-9]{5}-[0-9]{3}".toRegex())){
+    val e = Status.INVALID_ARGUMENT
+        .withDescription("Cep inválido!")
+        .augmentDescription("Formato esperado deve ser 99999-999")
+        .asRuntimeException()
+    responseObserver?.onError(e)
+}
+
+5) Nosso projeto é simples, pois é apenas didático. Mas na vida real, quando estamos fazendo operações complexas pode ocorrer erros inesperados. Nosso calculo de frete na vida real seria complexo, vamos tratá-lo:
+
+try {
+    frete = Random.nextDouble(from = 0.0, until = 1000.0) // Logica que poderia ser complexa
+} catch (e: Exception) {
+    responseObserver?.onError(
+        Status.INTERNAL
+            .withDescription(e.message)
+            .withCause(e) // Esse é anexado ao Status, mas não é enviado ao Client
+            .asRuntimeException()
+    )
+}
+
+6) Lembra que no Spring, com as validações do Bean Validation podiamos retornar o erro com mais detalhes, com eles podíamos retornar até mesmo uma coleção de erros ou objetos. Com a classe Status do gRPC não podemos fazer isso, mas surgiu uma classe que permite isso, com essa classe poderemos adicionar mais detalhes (mensagens e objetos). Para exemplificar esse erro vamos criar um erro de segurança, e a violação para ocorrer esse erro será CEP com fim 333, ou seja, se cliente mandar um CEP que tem 333 no final ocorreá uma falha e vamos validar isso com a nova classe mencionada. Vamos implementar isso no próximo passo;
+
+7) Veja como vai ficar, depois explico:
+
+//Simulaçao de verificação de Segurança. Se temrinar com 333 ocorrerá um erro!
+if (cep.endsWith("333")) {
+    val statusProto = com.google.rpc.Status.newBuilder()
+        .setCode(Code.PERMISSION_DENIED.number)
+        .setMessage("Erro de Segurança!")
+        .addDetails(
+            Any.pack(
+                ErrorDetails.newBuilder()
+                    .setCode(401)
+                    .setMessage("Aqui eu explico o motivo")
+                    .build()
+            )
+        )
+        .build()
+
+    val e = StatusProto.toStatusRuntimeException(statusProto)
+    responseObserver?.onError(e)
+}
+
+A primeira mudança aqui, foi usar oa classe Status, mas agora do pacote (com.google.rpc). Ao digitar status e escolher o pacote mencionado o valor que vai ficar será com.google.rpc.Status;
+
+Outra mudança, como queremos mandar mais detalhes no erro, criamos no arquivo .proto a message (simula classe) chamada ErrorDetails:
+message ErrorDetails{
+  int32 code = 1;
+  string message =2;
+}
+
+Depois de dar build na mensagem de erro e guardá-la na variável statusProto vamos ter que transformar essa variável em StatusRunTimeExcpetion e para isso usamos a classe StatusProto e seu metodo toStatusRuntimeException(). A classe StatusProto é do pacote (io.grpc.protobuf).
+
+Agora podemo testar, mas veremos que a mensagem ("Aqui eu explico o motivo") não chegou, o motivo é que a ferramenta BloomRPC que estamos usando não mostra os metadados de response, e essa mensagem o servidor enviará nos metadados. O BloomRPC apenas deixa enviar metadados na request, mas esse recurso estará disponível em breve.
+
+Obs: Nesse último erro que tratamos enviamos o seguinte código de erro: Code.PERMISSION_DENIED, o seu número é 7. Na documentação há uma tabela que mapeia os tipos de erro com os status do http, assim podemos manter um padrão.
+
+
+
+
